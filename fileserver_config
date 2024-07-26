@@ -1,0 +1,10 @@
+{
+  "mountpoints": {
+    "fs_common_name": "/mnt/inplace_import/fs_common_name_4237/",
+    "groupfs_common_name": "/mnt/inplace_import/groupfs_common_name_6789/",
+  },
+  "fs_directory_rules": {
+    "fs_common_name": "OMERO_in-place_import/<GROUP>/<USER>",
+    "groupfs_common_name": "<USER>"
+  }
+}
