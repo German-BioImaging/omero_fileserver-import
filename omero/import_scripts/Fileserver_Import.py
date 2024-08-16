@@ -35,7 +35,7 @@ PARAM_SKIP_THUMBNAIL = "Skip Thumbnail"
 PARAM_DRY_RUN = "Dry run"
 
 # Error with >1 if %thread% not in ManagedRepo path
-# see https://omero.readthedocs.io/en/stable/sysadmins/config.html#omero-fs-repo-path
+# see omero.readthedocs.io/en/stable/sysadmins/config.html#omero-fs-repo-path
 PARAM_PARALLEL_FILESET = 1
 PARAM_PARALLEL_UPLOAD = 8
 
@@ -46,7 +46,7 @@ MOUNTPOINTS_D = fileserver_config["mountpoints"]
 FS_DIR_DICT = fileserver_config["fs_directory_rules"]
 
 # Match Max_Mustermann_mamu100 and captures mamu100 (OMERO user_name)
-USER_RE = "(?:[^/_]+_)*(?P<user_name>[^/_]+)"
+USER_RE = "(?P<fullname>(?:[^/_]+_)*(?P<user_name>[^/_]+))"
 GROUP_RE = "(?P<group_name>[^/]+)"
 if "group_re" in fileserver_config:
     GROUP_RE = fileserver_config["group_re"]
@@ -113,11 +113,9 @@ def path_match_omero_usergroup(conn, server_path, fs_name):
         f"It must match this path: '{FS_DIR_DICT[fs_name]}'")
 
     allowed_usr_fpath = join(server_path, ALLOWED_USERS_FN)
-    if GROUP_RE in root_path_re:
-        idx_path = root_path_re.find(GROUP_RE)
-        grp_name = match.group('group_name')
-        allowed_usr_fpath = join(server_path[:idx_path],
-                                 grp_name,
+    if USER_RE in root_path_re:
+        # Allowed user is considered to be in the parent folder of users
+        allowed_usr_fpath = join(server_path[:match.start("fullname")],
                                  ALLOWED_USERS_FN)
 
     short_path = allowed_usr_fpath[len(MOUNTPOINTS_D[fs_name]):]
