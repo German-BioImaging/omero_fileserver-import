@@ -297,6 +297,7 @@ def inplace_mv(conn, params):
             print('\n'.join(not_found))
         assert len(different_folder) == 0, f"All target files are not in the same group folder. See details in script output."
         assert len(not_found) == 0, f"Target Files not found. See details in script output."
+        assert len(wrong_sizes) == 0, f"File size mismatch found. See details in script output."
         assert len(wrong_sums) == 0, f"Checksum mismatch found. See details in script output."
 
         # If we reach this point, all assertions went ok, no error were printed.
