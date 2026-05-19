@@ -250,8 +250,6 @@ def inplace_mv(conn, params):
             ofe_size = ofe.getSize().getValue()
             ofe_hasher = unwrap(ofe.getHasher().getValue())
 
-            print(ofe_name)
-
             client_path = fse.getClientPath().getValue()
             if client_path.count(params[PARAM_SRC_REPLACE]) > 1:
                 multi_occurence.append(f"Multiple occurence of {params[PARAM_SRC_REPLACE]} found in {client_path}")
