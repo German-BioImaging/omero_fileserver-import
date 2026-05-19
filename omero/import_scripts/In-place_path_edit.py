@@ -161,68 +161,72 @@ def symlink(target, link_name):
 def inplace_mv(conn, params):
     assert_no_backward_ref(params[PARAM_DST_REPLACE])
 
-    image_ids = []
-    if params["Data_Type"] == "Image":
-        image_ids = [rlong(i) for i in params["IDs"]]
-    elif params["Data_Type"] == "Dataset":
-        for dataset_id in params["IDs"]:
-            dset_o = conn.getObject("Dataset", dataset_id)
-            image_ids.extend([rlong(i.id) for i in dset_o.listChildren()])
-    elif params["Data_Type"] == "Plate":
-        for plate_id in params["IDs"]:
-            plate_o = conn.getObject("Plate", plate_id)
-            for well_o in plate_o.listChildren():
-                for ws in well_o.listChildren():
-                    image_ids.append(rlong(ws.getImage().getId()))
-
-    service_opts = conn.SERVICE_OPTS.copy()
-    qs = conn.getQueryService()
-
-    hql_fileset = """
-    SELECT DISTINCT fs.id
-    FROM Fileset fs
-    JOIN fs.images img
-    WHERE img.id IN (:iids)
-    """
-
     hql_inplace = """
-    SELECT fs.id, ann.ns, ann.textValue
-    FROM Fileset AS fs
-    JOIN fs.annotationLinks AS a_link
-    JOIN a_link.child AS ann
-    WHERE fs.id IN (
-        SELECT distinct(fs.id) from Fileset AS fs
-        JOIN fs.images AS img
-        WHERE img.id in (:iids)
-    )
+        SELECT fs.id, ann.ns, ann.textValue
+        FROM Fileset AS fs
+        JOIN fs.annotationLinks AS a_link
+        JOIN a_link.child AS ann
+        WHERE fs.id IN (
+            SELECT distinct(fs.id) from Fileset AS fs
+            JOIN fs.images AS img
     """
 
     hql_fsentry = """
-    SELECT fse
-    FROM FilesetEntry fse
-    JOIN FETCH fse.fileset fs
-    JOIN FETCH fse.originalFile ofe
-    JOIN FETCH ofe.hasher
-    WHERE fs.id = (:fsid)
+        SELECT fse
+        FROM FilesetEntry fse
+        JOIN FETCH fse.fileset fs
+        JOIN FETCH fse.originalFile ofe
+        JOIN FETCH ofe.hasher
+        WHERE fs.id = (:fsid)
     """
 
-    ups = conn.getUpdateService()
-    hql_params = Parameters()
-    hql_params.map = {"iids": rlist(image_ids)}
+    hql_fileset = """
+        SELECT DISTINCT fs.id
+        FROM Fileset fs
+        JOIN fs.images img
+    """
 
-    inplace_res = qs.projection(hql_inplace, hql_params, service_opts)
+    if params["Data_Type"] == "Image":
+        subquery = """
+            WHERE img.id IN (:iids)
+        """
+    elif params["Data_Type"] == "Plate":
+        subquery = """
+            JOIN img.wellSamples ws
+            JOIN ws.well well
+            JOIN well.plate pl
+            WHERE pl.id IN (:iids)
+        """
+    elif params["Data_Type"] == "Dataset":
+        subquery = """
+            JOIN img.datasetLinks dl
+            JOIN dl.parent ds
+            WHERE ds.id IN (:iids)
+        """
+
+    hql_fileset += subquery
+    hql_inplace += subquery + ")"
+    id_l = [rlong(i) for i in params["IDs"]]
+    img_params = Parameters()
+    img_params.map = {"iids": rlist(id_l)}
+
+    service_opts = conn.SERVICE_OPTS.copy()
+    qs = conn.getQueryService()
+    ups = conn.getUpdateService()
+
+    inplace_res = qs.projection(hql_inplace, img_params, service_opts)
     inplace_filesets = []
     for row in inplace_res:
         fs_id, ns, text_value = row
         if (unwrap(ns) == omero.constants.namespaces.NSFILETRANSFER
-            and unwrap(text_value) in ["ome.formats.importer.transfers.HardlinkFileTransfer",
-                                       "ome.formats.importer.transfers.SymlinkFileTransfer"]):
+            and unwrap(text_value) in ["ome.formats.importer.transfers.SymlinkFileTransfer"]):
+            # can support "ome.formats.importer.transfers.HardlinkFileTransfer" but need to implement this in the symlink() function
             inplace_filesets.append(unwrap(fs_id))
 
     jobs, wrong_permission, not_inplace = [], [], []
     allowed_path = None
 
-    fs_res = qs.projection(hql_fileset, hql_params, service_opts)
+    fs_res = qs.projection(hql_fileset, img_params, service_opts)
     for row in fs_res:  # First iterating the fileset, to skip the whole if an error is found
         fileset_id = unwrap(row[0])
         fs_o = conn.getObject("Fileset", fileset_id)
@@ -233,18 +237,20 @@ def inplace_mv(conn, params):
             wrong_permission.append(f"Fileset {fileset_id}: User has no permission to edit.")
             continue
 
-        hql_params = Parameters()
-        hql_params.map = {"fsid": rlong(fileset_id)}
+        fs_params = Parameters()
+        fs_params.map = {"fsid": rlong(fileset_id)}
 
         # Iterating all fileset entries of the set. Here only checks that move is possible, jobs are run when everything is green
         different_folder, not_found, wrong_sums, multi_occurence, wrong_sizes = [], [], [], [], []
-        for fse in qs.findAllByQuery(hql_fsentry, hql_params, service_opts):
+        for fse in qs.findAllByQuery(hql_fsentry, fs_params, service_opts):
             ofe = fse.getOriginalFile()
             ofe_path = ofe.getPath().getValue()
             ofe_name = ofe.getName().getValue()
             ofe_hash = ofe.getHash().getValue()
             ofe_size = ofe.getSize().getValue()
             ofe_hasher = unwrap(ofe.getHasher().getValue())
+
+            print(ofe_name)
 
             client_path = fse.getClientPath().getValue()
             if client_path.count(params[PARAM_SRC_REPLACE]) > 1:
@@ -258,6 +264,7 @@ def inplace_mv(conn, params):
 
             if allowed_path is None:
                 # Validate the target path only once.
+                # This throws an assertion error if the validation fails.
                 allowed_path = path_match_omero_usergroup(conn, new_client_path)
             if not new_client_path.startswith(allowed_path):  # All moved files must have the same "root"
                 different_folder.append(f"{new_client_path} does not match the first detected root {allowed_path}")
