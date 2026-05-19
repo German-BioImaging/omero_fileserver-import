@@ -14,7 +14,7 @@ or via the OMERO.web interface
 
 ### Configuration
 
-A configuration file (fileserver_config.json) must be placed on the server and be readable for the omero-server linux user. 
+A configuration file (fileserver_config.json) must be placed on the server and be readable for the omero-server linux user.
 This file describes where the different fileservers are mounted, and where should the image data be located in each.
 
 Example configurations from `fileserver_config.json` of this repo:
@@ -39,16 +39,36 @@ and example entries in `/etc/fstab` where omero-server user on the VM has uid=98
 
 In this example there are two fileservers. `facility_fs_name` is mounted here `/mnt/inplace_import/facility_fs_name_4237/`. The number at the end of the mount point can help prevent unwanted users from guessing the path of fileservers they don't have access to (the available fileservers are listed by the script with their common names).
 
-`fs_directory_rules` gives the path (prefixed by the mountpoint) where users are allowed to put data for their in-place import. `<GROUP>` is a placeholder for a group folder (access rules defined for the fileserver). `<USER>` is a placeholder for a folder named after a user (the name of that folder must end with "_omename"). 
+`fs_directory_rules` gives the path (prefixed by the mountpoint) where users are allowed to put data for their in-place import. `<GROUP>` is a placeholder for a group folder (access rules defined for the fileserver). `<USER>` is a placeholder for a folder named after a user (the name of that folder must end with "_omename").
 
 Thus in the case of `facility_fs_name`, user Max Mustermann with username mamu100 must place his data in his group folder like this: `OMERO_in-place_import/Lab_ABCD/Max_Mustermann_mamu100/any/folder/he/likes`
 
 In the case of `group_fs_name`, user Max Mustermann with username mamu100 must place his data in his group folder like this: `Max_Mustermann_mamu100/any/folder/he/likes`
 
-Because the server is allowed to access all images on every fileserver, there is an additional mechanism to prevent users from importing data not belonging to them (data they normally have no access to on the fileserver, but which they can guess the path of). 
+Because the server is allowed to access all images on every fileserver, there is an additional mechanism to prevent users from importing data not belonging to them (data they normally have no access to on the fileserver, but which they can guess the path of).
 This is done with a file `allowed_users.txt` containing a list of omero users. Currently, this file must be placed in the root of the folder `<USER>` as defined in `fs_directory_rules`:
 * `OMERO_in-place_import/Lab_ABCD/allowed_users.txt` in the case of `facility_fs_name`
 * `allowed_users.txt` in the case of `group_fs_name`
 
-This works only if the file `allowed_users.txt` is write restricted from the fileserver permissions managing also the access to the files (if unwanted users have access to the image files, they can copy them anyway). 
+This works only if the file `allowed_users.txt` is write restricted from the fileserver permissions managing also the access to the files (if unwanted users have access to the image files, they can copy them anyway).
+
+
+# In-place path edit script
+
+## Configuration
+
+The configuration required for this script is almost the same as for the Fileserver_import.
+Before uploading the script, edit the following hard coded parameters in the script:
+* CONFIG_FILE_PATH: ensure that the location of the config file is the same
+* MANAGED_DIR: Change this path to your own managed_dir path if different from default.
+
+## Installation
+
+The script can be added to the official scripts via this command from the repo root folder:
+
+```bash
+omero script upload --official ./omero/import_scripts/In-place_path_edit.py
+```
+
+or via the OMERO.web interface
 
