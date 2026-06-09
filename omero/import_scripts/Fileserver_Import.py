@@ -11,7 +11,7 @@ from omero.model import ProjectI, DatasetI, ProjectDatasetLinkI
 
 import os
 import json
-from os.path import join
+from os.path import join, normpath
 import re
 from glob import glob
 from collections import defaultdict
@@ -30,6 +30,9 @@ ALLOWED_USERS_FN = "allowed_users.txt"
 PARAM_FILESERVER = "Fileserver name"
 PARAM_CLIENT_FOLDER = "Main folder path"
 PARAM_FILENAMES = "File names"
+PARAM_SUBFOLDERS = "Subfolders"
+PARAM_CHAR_CONCAT = "Folder name separator"
+PARAM_MAIN_NAME = "Include main folder in dataset name"
 PARAM_SKIP_MINMAX = "Skip Min/Max"
 PARAM_SKIP_THUMBNAIL = "Skip Thumbnail"
 PARAM_DRY_RUN = "Dry run"
@@ -151,11 +154,13 @@ def path_match_omero_usergroup(conn, server_path, fs_name):
 
 def list_files_to_import(server_path, params):
     to_import_l = []
-    for image_path in params[PARAM_FILENAMES]:
-        assert_no_backward_ref(image_path)
-        for full_path in glob(join(server_path, image_path)):
-            if (os.path.isfile(full_path)):
-                to_import_l.append(full_path)
+    for subfolder_path in params[PARAM_SUBFOLDERS]:
+        assert_no_backward_ref(subfolder_path)
+        for image_path in params[PARAM_FILENAMES]:
+            assert_no_backward_ref(image_path)
+            for full_path in glob(join(server_path, subfolder_path, image_path)):
+                if (os.path.isfile(full_path)):
+                    to_import_l.append(normpath(full_path))
     to_import_l = list(set(to_import_l))  # Ensure no path is duplicated
     to_import_l.sort()
     return to_import_l
@@ -258,6 +263,8 @@ def inplace_import(conn, client, server_path, params):
 
     print("\n\n################### Files to import ###################\n")
 
+    concat_chars = params[PARAM_CHAR_CONCAT]
+
     target_dset_d = defaultdict(list)
     if params["Data_Type"] == "Project":
         # Find what datasets to generate
@@ -268,9 +275,12 @@ def inplace_import(conn, client, server_path, params):
             while tmp_path != parent_server_path:
                 tmp_path, dir_ = os.path.split(tmp_path)
                 dir_l.insert(0, dir_)
-            # Only keep first directory if no other (from server_path)
-            dir_l = dir_l if len(dir_l) == 1 else dir_l[1:]
-            target_dset_d["__".join(dir_l)].append(file_path)
+
+            if not params[PARAM_MAIN_NAME]:
+                # Only keep first directory if no other (from server_path)
+                dir_l = dir_l if len(dir_l) == 1 else dir_l[1:]
+
+            target_dset_d[concat_chars.join(dir_l)].append(file_path)
         for k, v in target_dset_d.items():
             print(f"New dataset {k}:")
             for file_path in v:
@@ -326,23 +336,34 @@ def run_script():
             values=src_fileservers),
         scripts.String(
             PARAM_CLIENT_FOLDER, optional=False, grouping="2.2",
-            description="The path to the main folder containing " +
-            "subfolders and files to import."),
+            description="Path to the main folder. From this path, searches " +
+            "matching file names in the specified subfolders"),
         scripts.List(
-            PARAM_FILENAMES, optional=False, grouping="2.3",
+            PARAM_SUBFOLDERS, grouping="2.3", default="",
+            description="The subfolders to search. Each level must be specified. Use * to " +
+            "match multiple folders. E.g '2024-07-*' or '*/*'").ofType(rstring("")),
+        scripts.List(
+            PARAM_FILENAMES, optional=False, grouping="2.4",
             description="The list of file names to import. Use * to " +
-            "match multiple names/folders. E.g '*.tiff' or '2024-07-*/*.tiff'"
+            "match multiple names. E.g '*.tiff, *.tif'"
             ).ofType(rstring("")),
         scripts.Bool(
-            PARAM_SKIP_MINMAX, grouping="2.4", default=True,
+            PARAM_MAIN_NAME, grouping="2.5", default=False,
+            description="If subfolder are specified, check to include the main folder" +
+            " in the dataset name (subfolder names are concatenated)."),
+        scripts.String(
+            PARAM_CHAR_CONCAT, grouping="2.6", default="__",
+            description="Symbols used to separate concatenated subfolder names."),
+        scripts.Bool(
+            PARAM_SKIP_MINMAX, grouping="3.1", default=True,
             description="Skip detection of min and max pixel " +
             "values used for the image display settings."),
         scripts.Bool(
-            PARAM_SKIP_THUMBNAIL, grouping="2.5", default=False,
+            PARAM_SKIP_THUMBNAIL, grouping="3.2", default=False,
             description="Skip generation of thumbnail at import " +
             "(generated later when browsing images)."),
         scripts.Bool(
-            PARAM_DRY_RUN, grouping="2.6", default=False,
+            PARAM_DRY_RUN, grouping="3.3", default=False,
             description="Dry run shows the output of what would be " +
             "performed without importing images."),
         namespaces=[omero.constants.namespaces.NSDYNAMIC],
@@ -361,13 +382,18 @@ def run_script():
         print(f"Target container: {params['Data_Type']}:{params['IDs'][0]}")
         print(f"{PARAM_FILESERVER}: {params[PARAM_FILESERVER]}")
         print(f"{PARAM_CLIENT_FOLDER}: {params[PARAM_CLIENT_FOLDER]}")
+        print(f"{PARAM_SUBFOLDERS}: {params[PARAM_SUBFOLDERS]}")
         print(f"{PARAM_FILENAMES}: {params[PARAM_FILENAMES]}")
+        print(f"{PARAM_MAIN_NAME}: {params[PARAM_MAIN_NAME]}")
+        print(f"{PARAM_CHAR_CONCAT}: {params[PARAM_CHAR_CONCAT]}")
         print(f"{PARAM_SKIP_MINMAX}: {params[PARAM_SKIP_MINMAX]}")
         print(f"{PARAM_SKIP_THUMBNAIL}: {params[PARAM_SKIP_THUMBNAIL]}")
         print(f"{PARAM_DRY_RUN}: {params[PARAM_DRY_RUN]}")
 
         for i, filename in enumerate(params[PARAM_FILENAMES]):
             params[PARAM_FILENAMES][i] = filename.replace("\\", "/")
+        for i, filename in enumerate(params[PARAM_SUBFOLDERS]):
+            params[PARAM_SUBFOLDERS][i] = filename.replace("\\", "/")
 
         assert len(params["IDs"]) == 1, (
             "Only one ID can be provided.")
