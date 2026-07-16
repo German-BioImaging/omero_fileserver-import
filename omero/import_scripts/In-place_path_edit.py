@@ -4,8 +4,8 @@
 import omero
 import omero.scripts as scripts
 from omero.gateway import BlitzGateway
-from omero.sys import Parameters
-from omero.rtypes import rlong, rlist, rstring, unwrap
+from omero.sys import Parameters, Filter
+from omero.rtypes import rint, rlong, rlist, rstring, unwrap
 
 import os, tempfile
 import hashlib
@@ -37,6 +37,8 @@ checksum_d = {
     # unfortunately not implemented in hashlib
     # Adler-32 CRC-32 Murmur3-32 Murmur3-128 File-Size-64
 }
+
+BATCH_SIZE_FSE = 1000
 
 with open(CONFIG_FILE_PATH) as f:
     fileserver_config = json.load(f)
@@ -242,52 +244,61 @@ def inplace_mv(conn, params):
 
         # Iterating all fileset entries of the set. Here only checks that move is possible, jobs are run when everything is green
         different_folder, not_found, wrong_sums, multi_occurence, wrong_sizes = [], [], [], [], []
-        for fse in qs.findAllByQuery(hql_fsentry, fs_params, service_opts):
-            ofe = fse.getOriginalFile()
-            ofe_path = ofe.getPath().getValue()
-            ofe_name = ofe.getName().getValue()
-            ofe_hash = ofe.getHash().getValue()
-            ofe_size = ofe.getSize().getValue()
-            ofe_hasher = unwrap(ofe.getHasher().getValue())
 
-            client_path = fse.getClientPath().getValue()
-            if client_path.count(params[PARAM_SRC_REPLACE]) > 1:
-                multi_occurence.append(f"Multiple occurence of {params[PARAM_SRC_REPLACE]} found in {client_path}")
-                continue
+        offset = 0
+        while True:
+            fs_params.theFilter = Filter(limit=rint(BATCH_SIZE_FSE), offset=rint(offset))
+            result_fse_q = qs.findAllByQuery(hql_fsentry, fs_params, service_opts)
+            if len(result_fse_q) == 0:
+                break
+            for fse in result_fse_q:
+                ofe = fse.getOriginalFile()
+                ofe_path = ofe.getPath().getValue()
+                ofe_name = ofe.getName().getValue()
+                ofe_hash = ofe.getHash().getValue()
+                ofe_size = ofe.getSize().getValue()
+                ofe_hasher = unwrap(ofe.getHasher().getValue())
 
-            new_client_path = client_path.replace(params[PARAM_SRC_REPLACE], params[PARAM_DST_REPLACE])
-            if client_path == new_client_path:
-                print(f"WARNING: unchanged link for {new_client_path}")
-            new_client_path = join("/", new_client_path)
-
-            if allowed_path is None:
-                # Validate the target path only once.
-                # This throws an assertion error if the validation fails.
-                allowed_path = path_match_omero_usergroup(conn, new_client_path)
-            if not new_client_path.startswith(allowed_path):  # All moved files must have the same "root"
-                different_folder.append(f"{new_client_path} does not match the first detected root {allowed_path}")
-                continue
-
-            if not os.path.isfile(new_client_path):
-                not_found.append(f"{new_client_path}: File not found\n")
-                continue
-
-            new_size = os.path.getsize(new_client_path)
-            if new_size != ofe_size:
-                wrong_sizes.append(f"{join(ofe_path, ofe_name)}: {ofe_size} bytes\n{new_client_path}: {new_size} bytes\n")
-                continue
-
-            if params[PARAM_CHECKSUM]:
-                if ofe_hasher not in checksum_d.keys():
-                    raise ValueError(f"Unsupported hasher: {ofe_hasher}")
-                with open(join(new_client_path), "rb") as f:
-                    new_hash = hashlib.file_digest(f, checksum_d[ofe_hasher]).hexdigest()
-
-                if new_hash != ofe_hash:
-                    wrong_sums.append(f"{ofe_hasher}\n{join(ofe_path, ofe_name)}: {ofe_hash}\n{new_client_path}: {new_hash}\n")
+                client_path = fse.getClientPath().getValue()
+                if client_path.count(params[PARAM_SRC_REPLACE]) > 1:
+                    multi_occurence.append(f"Multiple occurence of {params[PARAM_SRC_REPLACE]} found in {client_path}")
                     continue
 
-            jobs.append((fse, new_client_path, ofe_path, ofe_name))
+                new_client_path = client_path.replace(params[PARAM_SRC_REPLACE], params[PARAM_DST_REPLACE])
+                if client_path == new_client_path:
+                    print(f"WARNING: unchanged link for {new_client_path}")
+                new_client_path = join("/", new_client_path)
+
+                if allowed_path is None:
+                    # Validate the target path only once.
+                    # This throws an assertion error if the validation fails.
+                    allowed_path = path_match_omero_usergroup(conn, new_client_path)
+                if not new_client_path.startswith(allowed_path):  # All moved files must have the same "root"
+                    different_folder.append(f"{new_client_path} does not match the first detected root {allowed_path}")
+                    continue
+
+                if not os.path.isfile(new_client_path):
+                    not_found.append(f"{new_client_path}: File not found\n")
+                    continue
+
+                new_size = os.path.getsize(new_client_path)
+                if new_size != ofe_size:
+                    wrong_sizes.append(f"{join(ofe_path, ofe_name)}: {ofe_size} bytes\n{new_client_path}: {new_size} bytes\n")
+                    continue
+
+                if params[PARAM_CHECKSUM]:
+                    if ofe_hasher not in checksum_d.keys():
+                        raise ValueError(f"Unsupported hasher: {ofe_hasher}")
+                    with open(join(new_client_path), "rb") as f:
+                        new_hash = hashlib.file_digest(f, checksum_d[ofe_hasher]).hexdigest()
+
+                    if new_hash != ofe_hash:
+                        wrong_sums.append(f"{ofe_hasher}\n{join(ofe_path, ofe_name)}: {ofe_hash}\n{new_client_path}: {new_hash}\n")
+                        continue
+
+                jobs.append((fse, new_client_path, ofe_path, ofe_name))
+
+            offset += BATCH_SIZE_FSE
 
         if multi_occurence:
             # Only print something if there's an issue, then fail with the assertion.
