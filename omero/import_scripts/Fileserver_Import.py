@@ -33,6 +33,7 @@ PARAM_FILENAMES = "File names"
 PARAM_SKIP_MINMAX = "Skip Min/Max"
 PARAM_SKIP_THUMBNAIL = "Skip Thumbnail"
 PARAM_DRY_RUN = "Dry run"
+PARAM_ADMIN_IMPORT = "Import_for_user"
 
 # Error with >1 if %thread% not in ManagedRepo path
 # see omero.readthedocs.io/en/stable/sysadmins/config.html#omero-fs-repo-path
@@ -214,10 +215,10 @@ def build_cli_import_args(target_arg, file_path_l, params):
     return args
 
 
-def cli_do_import(args, client):
+def cli_do_import(args, conn):
     cli_ = omero.cli.CLI()
     cli_.loadplugins()
-    cli_.set_client(client.createClient(secure=False))
+    cli_.set_client(conn.c.createClient(secure=True))
     cli_.invoke(args)
     cli_.get_client().closeSession()
 
@@ -229,7 +230,7 @@ def assert_no_backward_ref(curr_path):
     assert not curr_path.startswith("../"), message
 
 
-def inplace_import(conn, client, server_path, params):
+def inplace_import(conn, server_path, params):
     """
     Pre-upload verifications:
       - the folder path
@@ -289,7 +290,7 @@ def inplace_import(conn, client, server_path, params):
         args = build_cli_import_args(target_arg, file_path_l, params)
         print("omero " + " ".join(args) + "\n")
         if not params[PARAM_DRY_RUN]:
-            cli_do_import(args, client)
+            cli_do_import(args, conn)
             msg = "Import done"
 
     return target_obj, msg  # summary
@@ -345,6 +346,12 @@ def run_script():
             PARAM_DRY_RUN, grouping="2.6", default=False,
             description="Dry run shows the output of what would be " +
             "performed without importing images."),
+        scripts.Bool(
+            "Admin section", grouping="3", default=False, description="Admin only."),
+        scripts.String(
+            PARAM_ADMIN_IMPORT, optional=True, grouping="3.1",
+            description="Admin only. If provided, " +
+            "the import will be performed as this user."),
         namespaces=[omero.constants.namespaces.NSDYNAMIC],
         version=VERSION,
         authors=AUTHORS,
@@ -352,10 +359,19 @@ def run_script():
         contact=CONTACT,
     )
 
+    su_conn = None  # Declaration here to avoid UnboundLocalError in finally block
+
     try:
         params = client.getInputs(unwrap=True)
+
+        # Handle impersonation if requested and user is admin
+        import_user = params.get(PARAM_ADMIN_IMPORT)
         conn = BlitzGateway(client_obj=client)
         conn.c.enableKeepAlive(60)
+
+        if import_user and not conn.isAdmin():
+            raise PermissionError(
+                f"Only administrators can use the '{PARAM_ADMIN_IMPORT}' parameter.")
 
         print("\n\n################## Script parameters ##################\n")
         print(f"Target container: {params['Data_Type']}:{params['IDs'][0]}")
@@ -365,6 +381,19 @@ def run_script():
         print(f"{PARAM_SKIP_MINMAX}: {params[PARAM_SKIP_MINMAX]}")
         print(f"{PARAM_SKIP_THUMBNAIL}: {params[PARAM_SKIP_THUMBNAIL]}")
         print(f"{PARAM_DRY_RUN}: {params[PARAM_DRY_RUN]}")
+        if params.get(PARAM_ADMIN_IMPORT):
+            print(f"{PARAM_ADMIN_IMPORT}: {params[PARAM_ADMIN_IMPORT]}")
+
+        if import_user and conn.isAdmin():
+            su_conn = conn.suConn(import_user, conn.getGroupFromContext().name)
+            exp_grp = conn.getGroupFromContext()
+
+            ome_name_l = list(map(lambda x: x.getOmeName(), exp_grp.groupSummary()[0] + exp_grp.groupSummary()[1]))
+            assert import_user in ome_name_l, (
+                f"Admin import: user '{import_user}' does not exist in group '{exp_grp.name}'."
+            )
+            su_conn.c.enableKeepAlive(60)
+            print("\nConnected as user:", su_conn.getUser().getOmeName())
 
         for i, filename in enumerate(params[PARAM_FILENAMES]):
             params[PARAM_FILENAMES][i] = filename.replace("\\", "/")
@@ -373,8 +402,13 @@ def run_script():
             "Only one ID can be provided.")
 
         server_path = map_path_to_server(params)
-        robj, message = inplace_import(
-            conn, client, server_path, params)
+
+        if su_conn is not None:
+            robj, message = inplace_import(
+                su_conn, server_path, params)
+        else:
+            robj, message = inplace_import(
+                conn, server_path, params)
 
         client.setOutput("Message", rstring(message))
         if robj is not None:
@@ -391,6 +425,8 @@ def run_script():
         raise err
     finally:
         client.closeSession()
+        if su_conn is not None:
+            su_conn.close()
 
 
 if __name__ == "__main__":
